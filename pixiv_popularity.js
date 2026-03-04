@@ -2,12 +2,11 @@
 // @name         pixiv Sort by Popularity
 // @namespace    https://pixiv.net/
 // @version      1.0.0
-// @description  Show 12 images sorted by popularity without pixiv Premium.
+// @description  Show images sorted by popularity without pixiv Premium.
 // @author       Yukari Kaname
 // @license      MIT
 // @icon         https://www.pixiv.net/favicon.ico
 // @homepageURL  https://github.com/yukarikaname/pixiv-popularity
-// @contributionURL https://www.patreon.com/c/yukarikaname
 // @match        https://www.pixiv.net/*tags*
 // @run-at       document-start
 // ==/UserScript==
@@ -15,240 +14,275 @@
 (function () {
     'use strict';
 
+    // Configuration constants
     const HIJACK_FLAG = 'ppapiPopularityHijacked';
-    let bindTimer = null;
+    const MODAL_ID = 'pixiv-popularity-modal';
+    const POLL_INTERVAL = 2000;
+    const POPULARITY_ORDER = 'popular_d';
+    const POPULARITY_ENTITY_ID = 'search-option/popular_d';
 
-    function getTagFromUrl() {
+    // Extract tag name from URL
+    const getTagFromUrl = () => {
         const m = location.pathname.match(/\/tags\/([^/?]+)/);
         return m ? decodeURIComponent(m[1]) : null;
-    }
+    };
 
-    // Find the main illustration container on the page
-    function findIllustContainer() {
-        // Try to find the main content container
-        const selectors = [
-            'ul[class*="List"] li:first-child',
-            'ul li a[href*="/artworks/"]',
-            'div[class*="grid"] a[href*="/artworks/"]',
-            'section a[href*="/artworks/"]'
-        ];
-        
-        for (let selector of selectors) {
-            const el = document.querySelector(selector);
-            if (el) {
-                // Find the parent ul or grid container
-                let container = el.closest('ul') || el.closest('div[class*="grid"]') || el.closest('section');
-                if (container) return container;
-            }
-        }
-        return null;
-    }
+    // Create modal dialog element
+    const createModalDialog = () => {
+        const dialog = document.createElement('div');
+        dialog.style.cssText = `
+            background: white;
+            width: 90%;
+            max-width: 1200px;
+            height: 80vh;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        `;
+        return dialog;
+    };
 
-    // Update menu selection to highlight "Sort by popularity"
-    function updateMenuSelection() {
-        // Update dropdown button text
-        const dropdownBtn = document.querySelector('button[data-ga4-label="open_dropdown_button"]');
-        if (dropdownBtn) {
-            const textSpan = dropdownBtn.querySelector('span');
-            if (textSpan) {
-                textSpan.textContent = 'Sort by popularity';
+    // Create modal header with title and close button
+    const createModalHeader = (illustCount, onClose) => {
+        const header = document.createElement('div');
+        header.style.cssText = `
+            padding: 16px 20px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #fafafa;
+        `;
+
+        const title = document.createElement('h2');
+        title.textContent = `Popular Works (${illustCount} results)`;
+        title.style.cssText = `
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+        `;
+        header.appendChild(title);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = '✕';
+        closeBtn.style.cssText = `
+            background: none;
+            border: none;
+            font-size: 24px;
+            color: #999;
+            cursor: pointer;
+            padding: 0;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        `;
+        closeBtn.onclick = onClose;
+        header.appendChild(closeBtn);
+
+        return header;
+    };
+
+    // Create image grid item
+    const createGridItem = (illust) => {
+        const item = document.createElement('div');
+        item.style.cssText = `
+            position: relative;
+            overflow: hidden;
+            aspect-ratio: 1;
+            border-radius: 4px;
+            background: #ddd;
+            cursor: pointer;
+            transition: transform 0.2s;
+        `;
+
+        item.addEventListener('mouseenter', () => {
+            item.style.transform = 'scale(1.05)';
+        });
+        item.addEventListener('mouseleave', () => {
+            item.style.transform = '';
+        });
+
+        const link = document.createElement('a');
+        link.href = 'https://www.pixiv.net/artworks/' + illust.id;
+        link.target = '_blank';
+        link.style.cssText = `
+            display: block;
+            width: 100%;
+            height: 100%;
+            text-decoration: none;
+        `;
+
+        const img = document.createElement('img');
+        img.src = illust.image_urls.medium;
+        img.alt = illust.title || '';
+        img.style.cssText = `
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        `;
+
+        link.appendChild(img);
+        item.appendChild(link);
+        return item;
+    };
+
+    // Create grid with all illustrations
+    const createImageGrid = (illusts) => {
+        const grid = document.createElement('div');
+        grid.style.cssText = `
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 12px;
+        `;
+
+        illusts.forEach((illust) => {
+            if (illust.id && illust.image_urls && illust.image_urls.medium) {
+                grid.appendChild(createGridItem(illust));
             }
-        }
-        
-        // Find all order buttons in the dropdown menu
-        const buttons = document.querySelectorAll('button[data-ga4-label="select_order_button"]');
-        
-        buttons.forEach((btn) => {
-            const entityId = btn.getAttribute('data-ga4-entity-id');
-            const iconContainer = btn.querySelector('pixiv-icon, div.size-16');
-            
-            // Only highlight the standard "Sort by popularity" (popular_d), not male/female variants
-            if (entityId === 'search-option/popular_d') {
-                // Add checkmark to popularity button
-                if (iconContainer) {
-                    if (iconContainer.tagName === 'DIV') {
-                        const check = document.createElement('pixiv-icon');
-                        check.setAttribute('name', '16/Check');
-                        iconContainer.replaceWith(check);
+        });
+
+        return grid;
+    };
+
+    // Display popular works in a modal popup
+    const showPopularModal = (illusts) => {
+        // Remove any existing modal
+        const existing = document.getElementById(MODAL_ID);
+        if (existing) existing.remove();
+
+        // Create modal overlay
+        const modal = document.createElement('div');
+        modal.id = MODAL_ID;
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 99999;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        `;
+
+        const dialog = createModalDialog();
+        const header = createModalHeader(illusts.length, () => modal.remove());
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+        `;
+        content.appendChild(createImageGrid(illusts));
+
+        dialog.appendChild(header);
+        dialog.appendChild(content);
+        modal.appendChild(dialog);
+        document.body.appendChild(modal);
+
+        // Close when clicking background
+        modal.onclick = (e) => {
+            if (e.target === modal) modal.remove();
+        };
+    };
+
+    // Normalize API response to consistent format
+    const normalizeWebIllusts = (data) => {
+        return (data || [])
+            .map((it) => {
+                const id = it.id || it.illustId || it.workId;
+                if (!id) return null;
+
+                // Extract image URL - try multiple possible field names
+                let imageUrl = it.url || '';
+                if (!imageUrl && it.urls) {
+                    imageUrl =
+                        it.urls.regular ||
+                        it.urls.small ||
+                        it.urls.thumb_mini ||
+                        it.urls.px_128x128_90 ||
+                        it.urls.px_480mw ||
+                        '';
+                }
+                if (!imageUrl && it.image_urls) {
+                    imageUrl =
+                        it.image_urls.medium ||
+                        it.image_urls.square_medium ||
+                        it.image_urls.large ||
+                        '';
+                }
+
+                if (!imageUrl) return null;
+
+                return {
+                    id: id,
+                    title: it.title || '',
+                    image_urls: {
+                        medium: imageUrl
+                    }
+                };
+            })
+            .filter(Boolean);
+    };
+
+    const pickWebPopularSource = (body) => {
+        const popular = body && body.popular;
+        const popularList = [];
+
+        if (popular) {
+            if (typeof popular === 'object') {
+                // Extract from nested object structure
+                if (!Array.isArray(popular)) {
+                    const possibleKeys = ['permanent', 'recent', 'illusts', 'data', 'items'];
+                    for (let key of possibleKeys) {
+                        if (Array.isArray(popular[key]) && popular[key].length > 0) {
+                            popularList.push(...popular[key]);
+                        }
                     }
                 }
-            } else {
-                // Remove checkmark from other buttons
-                if (iconContainer && iconContainer.tagName === 'PIXIV-ICON') {
-                    const div = document.createElement('div');
-                    div.className = 'size-16';
-                    iconContainer.replaceWith(div);
-                }
             }
-        });
-    }
 
-    // Replace page content with popularity sorted results
-    function replacePageResults(illusts) {
-        const container = findIllustContainer();
-        if (!container) {
-            console.error('[Pixiv Popularity] Could not find illustration container');
-            alert('Unable to find illustration container on page');
-            return;
-        }
-
-        // Store first child as template (save before clearing container)
-        const firstChild = container.querySelector('li') || container.querySelector('div[class*="item"]') || container.querySelector('a[href*="/artworks/"]');
-        if (!firstChild) {
-            console.error('[Pixiv Popularity] No template element found');
-            return;
-        }
-
-        // Extract size parameter from original image URL
-        const originalImg = firstChild.querySelector('img');
-        let sizeParam = '/c/250x250_80_a2/'; // Default size
-        
-        if (originalImg && originalImg.src) {
-            const match = originalImg.src.match(/\/c\/[^/]+\//);
-            if (match) {
-                sizeParam = match[0];
+            if (Array.isArray(popular) && popular.length > 0) {
+                popularList.push(...popular);
             }
         }
 
-        // Clone structure to keep classes and styles
-        const template = firstChild.cloneNode(true);
-        
-        // Clear container
-        container.innerHTML = '';
+        if (popularList.length > 0) return popularList;
 
-        // Add new items
-        illusts.slice(0, 60).forEach((illust) => {
-            const clone = template.cloneNode(true);
-            const link = clone.querySelector('a[href*="/artworks/"]') || (clone.tagName === 'A' ? clone : null);
-            const img = clone.querySelector('img');
-            
-            if (link) {
-                link.href = '/artworks/' + illust.id;
-            }
-            
-            // Update image using API URL with correct size parameter
-            if (img && illust.image_urls) {
-                const imgUrl = (illust.image_urls.medium || illust.image_urls.square_medium || '').replace(/\/c\/[^/]+\//, sizeParam);
-                
-                if (imgUrl) {
-                    img.src = imgUrl;
-                    if (img.hasAttribute('srcset')) img.srcset = imgUrl + ' 1x, ' + imgUrl + ' 2x';
-                    if (img.hasAttribute('data-src')) img.setAttribute('data-src', imgUrl);
-                    if (img.hasAttribute('data-srcset')) img.setAttribute('data-srcset', imgUrl + ' 1x, ' + imgUrl + ' 2x');
-                    img.alt = illust.title || '';
-                }
-            }
-            
-            // Update title if found
-            const titleEl = clone.querySelector('[class*="title"]') || clone.querySelector('h3') || clone.querySelector('p');
-            if (titleEl && illust.title) {
-                titleEl.textContent = illust.title;
-            }
-            
-            container.appendChild(clone);
-        });
-        
-        // Update menu selection state
-        updateMenuSelection();
-    }
-
-    // Show loading state
-    function showLoading() {
-        const container = findIllustContainer();
-        if (container) {
-            container.style.opacity = '0.5';
-            container.style.pointerEvents = 'none';
-        }
-    }
-
-    // Hide loading state
-    function hideLoading() {
-        const container = findIllustContainer();
-        if (container) {
-            container.style.opacity = '';
-            container.style.pointerEvents = '';
-        }
-    }
-
-    function normalizeWebIllusts(data) {
-        return (data || []).map(function (it) {
-            const id = it.id || it.illustId || it.workId;
-            
-            // Extract image URL from API response
-            let imageUrl = it.url || '';
-            if (!imageUrl && it.urls) {
-                imageUrl = it.urls.regular || it.urls.small || it.urls.thumb_mini || '';
-            }
-            
-            return {
-                id: id,
-                title: it.title || '',
-                image_urls: {
-                    medium: imageUrl,
-                    square_medium: imageUrl
-                }
-            };
-        }).filter(function (it) { return !!it.id; });
-    }
-
-    // Prioritize body.popular over body.data to get popularity-sorted results
-    // (body.data often returns newest-first for free accounts)
-    function pickWebPopularSource(body) {
-        const fullList = [];
-        const addList = function (arr) {
-            if (Array.isArray(arr)) fullList.push.apply(fullList, arr);
-        };
-
-        addList(body && body.data);
-        addList(body && body.illust && body.illust.data);
-        addList(body && body.illustManga && body.illustManga.data);
-
-        const fullById = {};
-        fullList.forEach(function (item) {
-            const id = item && (item.id || item.illustId || item.workId);
-            if (id !== undefined && id !== null) {
-                fullById[String(id)] = item;
-            }
-        });
-
-        // Try to extract popularity section first
-        const popular = body && body.popular;
-        const popularRaw = [];
-        if (Array.isArray(popular)) {
-            popularRaw.push.apply(popularRaw, popular);
-        } else if (popular && typeof popular === 'object') {
-            ['permanent', 'recent', 'illusts', 'data'].forEach(function (key) {
-                if (Array.isArray(popular[key])) {
-                    popularRaw.push.apply(popularRaw, popular[key]);
-                }
-            });
+        // Fallback chain when popular data is not available
+        const illustMangaData = body?.illustManga?.data;
+        if (Array.isArray(illustMangaData) && illustMangaData.length > 0) {
+            return illustMangaData;
         }
 
-        // Resolve IDs to full objects
-        const popularResolved = popularRaw.map(function (item) {
-            if (item === null || item === undefined) return null;
-            if (typeof item === 'number' || typeof item === 'string') {
-                return fullById[String(item)] || { id: item };
-            }
-            const id = item.id || item.illustId || item.workId;
-            if (id !== undefined && id !== null && fullById[String(id)]) {
-                return Object.assign({}, fullById[String(id)], item);
-            }
-            return item;
-        }).filter(Boolean);
-
-        if (popularResolved.length > 0) {
-            return popularResolved;
+        const illustData = body?.illust?.data;
+        if (Array.isArray(illustData) && illustData.length > 0) {
+            return illustData;
         }
 
-        return fullList;
-    }
+        const bodyData = body?.data;
+        if (Array.isArray(bodyData) && bodyData.length > 0) {
+            return bodyData;
+        }
 
-    function fetchWebPopularByCookie(tag) {
+        return [];
+    };
+
+    // Fetch popular works via Pixiv API
+    const fetchWebPopularByCookie = (tag) => {
         const encodedTagPath = encodeURIComponent(tag);
         const params = new URLSearchParams({
             word: tag,
-            order: 'popular_d',
+            order: POPULARITY_ORDER,
             mode: 'all',
             p: '1',
             s_mode: 's_tag',
@@ -257,56 +291,63 @@
         });
 
         const url = '/ajax/search/artworks/' + encodedTagPath + '?' + params.toString();
+
         return fetch(url, {
             method: 'GET',
             credentials: 'include',
             headers: {
                 'x-requested-with': 'XMLHttpRequest'
             }
-        }).then(function (res) {
-            if (!res.ok) {
-                throw new Error('Web API HTTP ' + res.status);
-            }
-            return res.json();
-        }).then(function (json) {
-            if (json.error) {
-                throw new Error(json.message || 'Pixiv web API returned error');
-            }
-            const body = json.body || {};
-            const source = pickWebPopularSource(body);
-            return { illusts: normalizeWebIllusts(source) };
-        });
-    }
+        })
+            .then((res) => {
+                if (!res.ok) throw new Error('Web API HTTP ' + res.status);
+                return res.json();
+            })
+            .then((json) => {
+                if (json.error) throw new Error(json.message || 'Pixiv web API returned error');
+                const body = json.body || {};
+                const source = pickWebPopularSource(body);
+                return { illusts: normalizeWebIllusts(source) };
+            });
+    };
 
-    function getElementText(el) {
+    const getElementText = (el) => {
         return (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    }
+    };
 
-    function isPopularityControl(el) {
-        // Don't hijack the dropdown menu button itself
+    const isPopularityControl = (el) => {
         const ga4Label = el.getAttribute('data-ga4-label');
-        if (ga4Label === 'open_dropdown_button') {
+        if (ga4Label === 'open_dropdown_button' || ga4Label === 'suggest_chip') {
             return false;
         }
-        
-        // Check data-ga4-entity-id first for precise match
+
         const entityId = el.getAttribute('data-ga4-entity-id');
-        if (entityId === 'search-option/popular_d') {
+        if (entityId === POPULARITY_ENTITY_ID) {
             return true;
         }
-        
-        // Fallback to text matching for "Sort by popularity" only (not male/female variants)
-        // This matches buttons inside carousel or other locations
-        const t = getElementText(el);
-        return (t.includes('sort by popularity') || t.includes('人気順')) && 
-               !t.includes('male') && !t.includes('female');
-    }
 
-    // Intercept clicks on popularity buttons using capture phase
-    function onPopularityClick(e) {
+        const t = getElementText(el);
+        const isPopularityText =
+            (t.includes('sort by popularity') || t.includes('人気順')) &&
+            !t.includes('male') &&
+            !t.includes('female');
+
+        if (isPopularityText) {
+            const isClickable =
+                el.tagName === 'BUTTON' ||
+                el.tagName === 'A' ||
+                el.getAttribute('role') === 'button';
+            return isClickable;
+        }
+
+        return false;
+    };
+
+    // Handle popularity button clicks
+    const onPopularityClick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+        e.stopImmediatePropagation?.();
 
         const tag = getTagFromUrl();
         if (!tag) {
@@ -314,57 +355,52 @@
             return;
         }
 
-        showLoading();
-        
         fetchWebPopularByCookie(tag)
-            .then(function (data) {
-                hideLoading();
-                if (data.illusts && data.illusts.length > 0) {
-                    replacePageResults(data.illusts);
+            .then((data) => {
+                const illusts = data.illusts || [];
+                if (illusts.length > 0) {
+                    showPopularModal(illusts);
                 } else {
                     alert('No popular results found.');
                 }
             })
-            .catch(function (err) {
-                hideLoading();
+            .catch((err) => {
                 alert('Error loading popular results: ' + (err.message || String(err)));
             });
-    }
+    };
 
-    // Scan DOM and hijack native popularity sort buttons
-    function bindHijack() {
-        const candidates = document.querySelectorAll('button, a[role="button"], div[role="button"]');
-        candidates.forEach(function (el) {
-            if (el.dataset[HIJACK_FLAG] === '1') return;
-            if (!isPopularityControl(el)) return;
-            el.dataset[HIJACK_FLAG] = '1';
-            el.addEventListener('click', onPopularityClick, true);
+    // Scan DOM and hijack popularity sort buttons
+    const bindHijack = () => {
+        const hasPopularBanner = Array.from(document.querySelectorAll('h3')).some((h3) =>
+            h3.textContent.includes('Popular works')
+        );
+
+        const candidates = document.querySelectorAll(
+            'button, a[role="button"], div[role="button"]'
+        );
+        candidates.forEach((el) => {
+            const isPopular = isPopularityControl(el);
+
+            if (isPopular) {
+                if (!hasPopularBanner) {
+                    el.remove();
+                    return;
+                }
+                if (el.dataset[HIJACK_FLAG] === '1') return;
+                el.dataset[HIJACK_FLAG] = '1';
+                el.addEventListener('click', onPopularityClick, true);
+            }
         });
-    }
+    };
 
-    function scheduleBind() {
-        clearTimeout(bindTimer);
-        bindTimer = setTimeout(bindHijack, 80);
-    }
-
-    // Monitor SPA navigation and DOM changes to rebind buttons
-    function installSpaHooks() {
-        const rawPushState = history.pushState;
-        history.pushState = function () {
-            const ret = rawPushState.apply(this, arguments);
-            scheduleBind();
-            return ret;
-        };
-        const rawReplaceState = history.replaceState;
-        history.replaceState = function () {
-            const ret = rawReplaceState.apply(this, arguments);
-            scheduleBind();
-            return ret;
-        };
-        window.addEventListener('popstate', scheduleBind);
-        new MutationObserver(scheduleBind).observe(document.documentElement, { childList: true, subtree: true });
-        setInterval(bindHijack, 1500);
-    }
+    // Monitor DOM changes for SPA navigation
+    const installSpaHooks = () => {
+        new MutationObserver(bindHijack).observe(document.documentElement, {
+            childList: true,
+            subtree: true
+        });
+        setInterval(bindHijack, POLL_INTERVAL);
+    };
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', bindHijack, { once: true });
