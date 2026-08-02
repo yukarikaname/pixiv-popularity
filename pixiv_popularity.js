@@ -1,31 +1,51 @@
 // ==UserScript==
 // @name         pixiv Sort by Popularity
 // @namespace    https://pixiv.net/
-// @version      1.0.0
-// @description  Show images sorted by popularity without pixiv Premium.
+// @version      1.0.1
+// @description  Add a "Popular" button to pixiv tag & search pages (any language). Shows works sorted by popularity without pixiv Premium.
 // @author       Yukari Kaname
 // @license      MIT
 // @icon         https://www.pixiv.net/favicon.ico
 // @homepageURL  https://github.com/yukarikaname/pixiv-popularity
-// @match        https://www.pixiv.net/*tags*
-// @run-at       document-start
+// @match        https://www.pixiv.net/tags/*
+// @match        https://www.pixiv.net/*/tags/*
+// @match        https://www.pixiv.net/search*
+// @run-at       document-idle
 // ==/UserScript==
 
 (function () {
     'use strict';
 
     // Configuration constants
-    const HIJACK_FLAG = 'ppapiPopularityHijacked';
-    const MODAL_ID = 'pixiv-popularity-modal';
+    const BUTTON_ID = 'ppapi-popularity-button';
+    const MODAL_ID = 'ppapi-popularity-modal';
     const POLL_INTERVAL = 2000;
     const POPULARITY_ORDER = 'popular_d';
-    const POPULARITY_ENTITY_ID = 'search-option/popular_d';
 
-    // Extract tag name from URL
-    const getTagFromUrl = () => {
-        const m = location.pathname.match(/\/tags\/([^/?]+)/);
-        return m ? decodeURIComponent(m[1]) : null;
+    // Extract search term from URL.
+    // Works on tag pages in ANY language (/tags/xxx, /en/tags/xxx, /ja/tags/xxx, ...)
+    // and on search pages (/search?q=...).
+    const getSearchTermFromUrl = () => {
+        const path = location.pathname;
+
+        // Tag page: take the segment right after the LAST "/tags/".
+        const tagIdx = path.lastIndexOf('/tags/');
+        if (tagIdx !== -1) {
+            const segment = path.slice(tagIdx + 6).split('/')[0];
+            return segment ? decodeURIComponent(segment) : null;
+        }
+
+        // Search page: use the "q" query parameter.
+        if (/\/search/.test(path)) {
+            const q = new URLSearchParams(location.search).get('q');
+            return q || null;
+        }
+
+        return null;
     };
+
+    const isTagPage = () => location.pathname.includes('/tags/');
+    const isSearchPage = () => /\/search/.test(location.pathname);
 
     // Create modal dialog element
     const createModalDialog = () => {
@@ -256,25 +276,11 @@
             }
         }
 
-        if (popularList.length > 0) return popularList;
-
-        // Fallback chain when popular data is not available
-        const illustMangaData = body?.illustManga?.data;
-        if (Array.isArray(illustMangaData) && illustMangaData.length > 0) {
-            return illustMangaData;
-        }
-
-        const illustData = body?.illust?.data;
-        if (Array.isArray(illustData) && illustData.length > 0) {
-            return illustData;
-        }
-
-        const bodyData = body?.data;
-        if (Array.isArray(bodyData) && bodyData.length > 0) {
-            return bodyData;
-        }
-
-        return [];
+        // NOTE: Do NOT fall back to the regular (non-popular) list here.
+        // When pixiv has no popularity ranking for a tag (e.g. small tags like
+        // "pippi"), the API returns an empty `popular` block plus the ordinary
+        // 60-item list. Showing those as "popular" would be misleading.
+        return popularList;
     };
 
     // Fetch popular works via Pixiv API
@@ -311,101 +317,154 @@
             });
     };
 
-    const getElementText = (el) => {
-        return (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    // ==== Button: label / creation ====
+
+    // Language-aware label (works on any pixiv locale, not just English).
+    const getButtonLabel = () => {
+        const lang = (document.documentElement.lang || '').toLowerCase();
+        if (lang.startsWith('ja')) return '人気順';
+        if (lang.startsWith('zh')) return '人气';
+        return 'Popular';
     };
 
-    const isPopularityControl = (el) => {
-        const ga4Label = el.getAttribute('data-ga4-label');
-        if (ga4Label === 'open_dropdown_button' || ga4Label === 'suggest_chip') {
-            return false;
-        }
-
-        const entityId = el.getAttribute('data-ga4-entity-id');
-        if (entityId === POPULARITY_ENTITY_ID) {
-            return true;
-        }
-
-        const t = getElementText(el);
-        const isPopularityText =
-            (t.includes('sort by popularity') || t.includes('人気順')) &&
-            !t.includes('male') &&
-            !t.includes('female');
-
-        if (isPopularityText) {
-            const isClickable =
-                el.tagName === 'BUTTON' ||
-                el.tagName === 'A' ||
-                el.getAttribute('role') === 'button';
-            return isClickable;
-        }
-
-        return false;
+    // Message shown when pixiv has no popularity ranking for the current tag.
+    const getUnavailableMessage = () => {
+        const lang = (document.documentElement.lang || '').toLowerCase();
+        if (lang.startsWith('ja')) return 'このタグでは人気順の結果を表示できません。';
+        if (lang.startsWith('zh')) return '该标签暂无可用的人气排序结果。';
+        return 'Popular results are unavailable for this tag.';
     };
 
-    // Handle popularity button clicks
-    const onPopularityClick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation?.();
+    const createButton = (term) => {
+        const btn = document.createElement('button');
+        btn.id = BUTTON_ID;
+        btn.type = 'button';
+        btn.dataset.term = term;
+        btn.textContent = getButtonLabel();
+        btn.style.cssText = `
+            all: unset;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 1;
+            padding: 0 16px;
+            height: 32px;
+            border-radius: 6px;
+            background: #0096fa;
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+            flex-shrink: 0;
+            transition: background-color 0.2s;
+        `;
 
-        const tag = getTagFromUrl();
-        if (!tag) {
-            alert('Unable to detect tag from URL.');
+        btn.addEventListener('mouseenter', () => {
+            btn.style.background = '#007bd6';
+        });
+        btn.addEventListener('mouseleave', () => {
+            btn.style.background = '#0096fa';
+        });
+        btn.addEventListener('click', () => onButtonClick(btn));
+
+        return btn;
+    };
+
+    // Find where to insert the button: { parent, reference } -> insert before `reference`.
+    const findInsertionTarget = () => {
+        if (isTagPage()) {
+            // Tag header row: [title | Add-to-favorites]. Insert before the favorites button.
+            const header = document.querySelector('[data-ga4-entity-id^="tag/"]');
+            if (header) {
+                const row = header.querySelector('.justify-between') || header;
+                return { parent: row, reference: row.lastElementChild };
+            }
+            return null;
+        }
+
+        if (isSearchPage()) {
+            // Sort row: [sort dropdown | divider | "Sort by popularity" premium]. Insert at the start.
+            const row = Array.from(document.querySelectorAll('div')).find((d) => {
+                const cls = (d.className || '').toString();
+                return (
+                    cls.includes('justify-start') &&
+                    cls.includes('items-center') &&
+                    cls.includes('h-32')
+                );
+            });
+            if (row) return { parent: row, reference: row.firstElementChild };
+            return null;
+        }
+
+        return null;
+    };
+
+    // Handle button clicks: fetch popular works and show them in a modal.
+    const onButtonClick = (btn) => {
+        const term = getSearchTermFromUrl();
+        if (!term) {
+            alert('Unable to detect search term from URL.');
             return;
         }
 
-        fetchWebPopularByCookie(tag)
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Loading…';
+
+        fetchWebPopularByCookie(term)
             .then((data) => {
                 const illusts = data.illusts || [];
                 if (illusts.length > 0) {
                     showPopularModal(illusts);
                 } else {
-                    alert('No popular results found.');
+                    alert(getUnavailableMessage());
                 }
             })
             .catch((err) => {
                 alert('Error loading popular results: ' + (err.message || String(err)));
+            })
+            .finally(() => {
+                btn.disabled = false;
+                btn.textContent = originalText;
             });
     };
 
-    // Scan DOM and hijack popularity sort buttons
-    const bindHijack = () => {
-        const hasPopularBanner = Array.from(document.querySelectorAll('h3')).some((h3) =>
-            h3.textContent.includes('Popular works')
-        );
+    // Keep the button in sync with the current page (works with SPA navigation).
+    const syncButton = () => {
+        const term = getSearchTermFromUrl();
 
-        const candidates = document.querySelectorAll(
-            'button, a[role="button"], div[role="button"]'
-        );
-        candidates.forEach((el) => {
-            const isPopular = isPopularityControl(el);
+        // Not a supported page -> remove any leftover button.
+        if (!term) {
+            const existing = document.getElementById(BUTTON_ID);
+            if (existing) existing.remove();
+            return;
+        }
 
-            if (isPopular) {
-                if (!hasPopularBanner) {
-                    el.remove();
-                    return;
-                }
-                if (el.dataset[HIJACK_FLAG] === '1') return;
-                el.dataset[HIJACK_FLAG] = '1';
-                el.addEventListener('click', onPopularityClick, true);
-            }
-        });
+        // Recreate the button if the search term changed.
+        const existing = document.getElementById(BUTTON_ID);
+        if (existing && existing.dataset.term !== term) {
+            existing.remove();
+        }
+
+        if (document.getElementById(BUTTON_ID)) return;
+
+        const target = findInsertionTarget();
+        if (!target) return;
+
+        const btn = createButton(term);
+        target.parent.insertBefore(btn, target.reference);
     };
 
     // Monitor DOM changes for SPA navigation
     const installSpaHooks = () => {
-        new MutationObserver(bindHijack).observe(document.documentElement, {
+        new MutationObserver(syncButton).observe(document.documentElement, {
             childList: true,
             subtree: true
         });
-        setInterval(bindHijack, POLL_INTERVAL);
+        setInterval(syncButton, POLL_INTERVAL);
     };
 
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', bindHijack, { once: true });
-    } else {
-        bindHijack();
-    }
+    syncButton();
     installSpaHooks();
 })();
