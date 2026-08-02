@@ -2,7 +2,7 @@
 // @name         pixiv Sort by Popularity
 // @namespace    https://pixiv.net/
 // @version      1.0.1
-// @description  Add a "Popular" button to pixiv tag & search pages (any language). Shows works sorted by popularity without pixiv Premium.
+// @description  Add a "Popular" button to pixiv tag & search pages. Shows works sorted by popularity without pixiv Premium.
 // @author       Yukari Kaname
 // @license      MIT
 // @icon         https://www.pixiv.net/favicon.ico
